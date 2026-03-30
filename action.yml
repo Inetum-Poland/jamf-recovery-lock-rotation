@@ -1,0 +1,118 @@
+name: Jamf Recovery Lock Rotation
+author: Bartłomiej Sojka
+description: >-
+  Rotate Recovery Lock passwords for Jamf-managed macOS devices.
+  Provide JAMF_CLIENT_ID and JAMF_CLIENT_SECRET via the workflow job or step env
+  (for example from repository secrets); they are not action inputs and are not
+  re-declared here so they pass through unchanged.
+
+branding:
+  icon: lock
+  color: purple
+
+inputs:
+  jamf_url:
+    description: Jamf Pro base URL (e.g. https://example.jamfcloud.com)
+    required: true
+
+  rotation_scope:
+    description: >-
+      "all" for every computer with a Management ID in inventory, or the exact
+      Smart Computer Group name for a scoped run.
+    required: false
+    default: all
+
+  dry_run:
+    description: If true, log intended actions without calling the MDM API.
+    required: false
+    default: 'false'
+
+  show_passwords_in_dry_run:
+    description: >-
+      When DRY_RUN is true, log generated passphrases (WARN). Ignored when
+      dry_run is false.
+    required: false
+    default: 'false'
+
+  log_level:
+    description: >-
+      Logging verbosity: debug, info, warn, or error.
+    required: false
+    default: info
+
+  wordlist:
+    description: >-
+      Bundled wordlist relative to the action root (e.g. wordlists/eff_short_wordlist_1.txt).
+      Use this from any consumer workflow to pick a file shipped inside the action.
+      Ignored when wordlist_path is set. If both are empty, the script default
+      (bundled eff_large_wordlist.txt) is used.
+    required: false
+    default: ''
+
+  wordlist_path:
+    description: >-
+      Absolute path to a wordlist on the runner. Use for a file in the caller
+      repository after actions/checkout (for example pass the workflow expression
+      that resolves to github.workspace plus a relative path). Takes precedence
+      over wordlist. Leave both empty for the script default (bundled
+      eff_large_wordlist.txt).
+    required: false
+    default: ''
+
+  word_count:
+    description: Number of words per passphrase.
+    required: false
+    default: '4'
+
+  delimiter:
+    description: Character(s) joining words in the passphrase.
+    required: false
+    default: '-'
+
+  inventory_id_batch_size:
+    description: >-
+      Max Jamf computer IDs per v3 inventory request when resolving Smart group
+      membership (RSQL id=in=(…)).
+    required: false
+    default: '80'
+
+outputs:
+  rotated_count:
+    description: Number of devices for which SET_RECOVERY_LOCK was issued (or simulated in dry run).
+    value: ${{ steps.rotate.outputs.rotated_count }}
+
+  failed_count:
+    description: Number of devices skipped or that failed during rotation.
+    value: ${{ steps.rotate.outputs.failed_count }}
+
+runs:
+  using: composite
+  steps:
+    - id: rotate
+      shell: bash
+      env:
+        JAMF_URL: ${{ inputs.jamf_url }}
+        ROTATION_SCOPE: ${{ inputs.rotation_scope }}
+        DRY_RUN: ${{ inputs.dry_run }}
+        SHOW_PASSWORDS_IN_DRY_RUN: ${{ inputs.show_passwords_in_dry_run }}
+        LOG_LEVEL: ${{ inputs.log_level }}
+        WORD_COUNT: ${{ inputs.word_count }}
+        DELIMITER: ${{ inputs.delimiter }}
+        INVENTORY_ID_BATCH_SIZE: ${{ inputs.inventory_id_batch_size }}
+      run: |
+        set -euo pipefail
+        if ! command -v zsh >/dev/null 2>&1; then
+          sudo apt-get update -qq
+          sudo apt-get install -y zsh
+        fi
+        SCRIPT="${{ github.action_path }}/recovery-lock-rotation.sh"
+        if [[ ! -f "$SCRIPT" ]]; then
+          echo "::error file=$SCRIPT::Missing recovery-lock-rotation.sh in the action bundle."
+          exit 1
+        fi
+        if [[ -n "${{ inputs.wordlist_path }}" ]]; then
+          export WORDLIST_PATH="${{ inputs.wordlist_path }}"
+        elif [[ -n "${{ inputs.wordlist }}" ]]; then
+          export WORDLIST_PATH="${{ github.action_path }}/${{ inputs.wordlist }}"
+        fi
+        zsh "$SCRIPT"
