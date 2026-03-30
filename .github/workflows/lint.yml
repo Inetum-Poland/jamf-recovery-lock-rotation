@@ -1,0 +1,40 @@
+name: Lint
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  zsh_lint:
+    name: Zsh syntax check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install zsh
+        run: sudo apt-get update && sudo apt-get install -y zsh
+
+      - name: Run zsh syntax check
+        run: |
+          find . -type f -name "*.sh" -o -name "*.zsh" | while read file; do
+            echo "Checking $file"
+            zsh -n "$file"
+          done
+
+  shellcheck:
+    name: ShellCheck (lint)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: .
+        env:
+          # Treat scripts as bash for better compatibility with zsh
+          SHELLCHECK_OPTS: -x -s bash
