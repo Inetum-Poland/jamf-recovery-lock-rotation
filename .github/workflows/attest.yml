@@ -1,7 +1,9 @@
 name: "Attest"
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - fix/generate-passphrase
 
 jobs:
   release:
