@@ -20,6 +20,13 @@ inputs:
     required: false
     default: all
 
+  clear_passwords:
+    description: >-
+      If true, skip the wordlist and send SET_RECOVERY_LOCK with an empty newPassword
+      (clears Recovery Lock). Works with dry_run for simulation. Default false.
+    required: false
+    default: 'false'
+
   dry_run:
     description: If true, log intended actions without calling the MDM API.
     required: false
@@ -27,8 +34,8 @@ inputs:
 
   show_passwords_in_dry_run:
     description: >-
-      When DRY_RUN is true, log generated passphrases (WARN). Ignored when
-      dry_run is false.
+      When DRY_RUN is true, log extra detail at WARN: passphrases when rotating,
+      or management IDs when clearing Recovery Lock. Ignored when dry_run is false.
     required: false
     default: 'false'
 
@@ -91,6 +98,7 @@ runs:
       env:
         JAMF_URL: ${{ inputs.jamf_url }}
         ROTATION_SCOPE: ${{ inputs.rotation_scope }}
+        CLEAR_PASSWORDS: ${{ inputs.clear_passwords }}
         DRY_RUN: ${{ inputs.dry_run }}
         SHOW_PASSWORDS_IN_DRY_RUN: ${{ inputs.show_passwords_in_dry_run }}
         LOG_LEVEL: ${{ inputs.log_level }}
