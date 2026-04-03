@@ -24,6 +24,7 @@
 # Optional: ROTATION_SCOPE=all, DRY_RUN=false, LOG_LEVEL=info
 # Optional: WORDLIST_PATH, WORD_COUNT=4, DELIMITER=-
 # Optional: SHOW_PASSWORDS_IN_DRY_RUN=false (only valid when DRY_RUN=true)
+# Optional: CLEAR_PASSWORDS=false — if true, skip wordlist; SET_RECOVERY_LOCK with empty newPassword (clear Recovery Lock)
 # Optional: INVENTORY_ID_BATCH_SIZE=80 (max Jamf Pro Computer IDs per GET …/v3/computers-inventory id=in=(…) filter)
 
 # PREREQUISITES: ———————————————————————————————————————————————————————————————————————————————————
@@ -37,6 +38,7 @@ SCRIPT_DIR="${0:A:h}"
 
 ROTATION_SCOPE="${ROTATION_SCOPE:-all}"
 DRY_RUN="${DRY_RUN:-false}"
+CLEAR_PASSWORDS="${CLEAR_PASSWORDS:-false}"
 SHOW_PASSWORDS_IN_DRY_RUN="${SHOW_PASSWORDS_IN_DRY_RUN:-false}"
 LOG_LEVEL="${LOG_LEVEL:-info}"
 WORDLIST_PATH="${WORDLIST_PATH:-${SCRIPT_DIR}/wordlists/eff_large_wordlist.txt}"
@@ -89,6 +91,14 @@ function validateConfig() {
 			;;
 	esac
 
+	case "${(L)CLEAR_PASSWORDS}" in
+		true | false) ;;
+		*)
+			log_error "CLEAR_PASSWORDS must be true or false (got: ${CLEAR_PASSWORDS})"
+			exit 1
+			;;
+	esac
+
 	case "${(L)SHOW_PASSWORDS_IN_DRY_RUN}" in
 		true | false) ;;
 		*)
@@ -110,9 +120,11 @@ function validateConfig() {
 			;;
 	esac
 
-	if [[ ! -r "${WORDLIST_PATH}" ]]; then
-		log_error "WORDLIST_PATH is not a readable file: ${WORDLIST_PATH}"
-		exit 1
+	if [[ "${(L)CLEAR_PASSWORDS}" != true ]]; then
+		if [[ ! -r "${WORDLIST_PATH}" ]]; then
+			log_error "WORDLIST_PATH is not a readable file: ${WORDLIST_PATH}"
+			exit 1
+		fi
 	fi
 
 	if ! [[ "${WORD_COUNT}" =~ ^[1-9][0-9]*$ ]]; then
@@ -421,10 +433,18 @@ function rotateRecoveryLock() {
 
 	case "${(L)DRY_RUN}" in
 		true)
-			if [[ "${(L)SHOW_PASSWORDS_IN_DRY_RUN}" == true ]]; then
-				log_warn "DRY_RUN: would send SET_RECOVERY_LOCK jamfComputerId=${JAMF_COMPUTER_ID:-unknown} managementId=${MANAGEMENT_ID} passphrase=${PASSPHRASE}"
+			if [[ "${(L)CLEAR_PASSWORDS}" == true ]]; then
+				if [[ "${(L)SHOW_PASSWORDS_IN_DRY_RUN}" == true ]]; then
+					log_warn "DRY_RUN: would clear Recovery Lock (SET_RECOVERY_LOCK with empty newPassword) jamfComputerId=${JAMF_COMPUTER_ID:-unknown} managementId=${MANAGEMENT_ID}"
+				else
+					log_info "DRY_RUN: would clear Recovery Lock for managementId (redacted)"
+				fi
 			else
-				log_info "DRY_RUN: would send SET_RECOVERY_LOCK for managementId (redacted)"
+				if [[ "${(L)SHOW_PASSWORDS_IN_DRY_RUN}" == true ]]; then
+					log_warn "DRY_RUN: would set Recovery Lock (SET_RECOVERY_LOCK) jamfComputerId=${JAMF_COMPUTER_ID:-unknown} managementId=${MANAGEMENT_ID} passphrase=${PASSPHRASE}"
+				else
+					log_info "DRY_RUN: would set Recovery Lock (SET_RECOVERY_LOCK) for managementId (redacted)"
+				fi
 			fi
 			return 0
 			;;
@@ -465,8 +485,12 @@ function writeGithubOutputs() {
 
 function main() {
 	validateConfig
-	loadWordlist
-	log_debug "Starting Jamf Recovery Lock Rotation (WORD_COUNT=${WORD_COUNT})"
+	if [[ "${(L)CLEAR_PASSWORDS}" == true ]]; then
+		log_info "Clear mode enabled: skipping wordlist; devices will receive SET_RECOVERY_LOCK with empty newPassword (Recovery Lock cleared)."
+	else
+		loadWordlist
+	fi
+	log_debug "Starting Jamf Recovery Lock Rotation (CLEAR_PASSWORDS=${CLEAR_PASSWORDS}, WORD_COUNT=${WORD_COUNT})"
 
 	trap 'authInvalidateToken 2>/dev/null || true' EXIT
 
@@ -498,7 +522,11 @@ function main() {
 			continue
 		fi
 
-		PASSPHRASE="$(generatePassphrase)"
+		if [[ "${(L)CLEAR_PASSWORDS}" == true ]]; then
+			PASSPHRASE=""
+		else
+			PASSPHRASE="$(generatePassphrase)"
+		fi
 
 		log_info "Processing device jamfComputerId=${JAMF_ID:-unknown} (${IDX}/${DEVICE_COUNT})"
 
@@ -513,7 +541,11 @@ function main() {
 
 	writeGithubOutputs "${ROTATED}" "${FAILED}"
 
-	log_info "Finished: rotated=${ROTATED} failed=${FAILED}"
+	if [[ "${(L)CLEAR_PASSWORDS}" == true ]]; then
+		log_info "Finished: cleared=${ROTATED} failed=${FAILED}"
+	else
+		log_info "Finished: rotated=${ROTATED} failed=${FAILED}"
+	fi
 
 	if ((FAILED > 0 && ROTATED == 0)); then
 		exit 2

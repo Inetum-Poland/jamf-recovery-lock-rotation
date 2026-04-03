@@ -72,8 +72,9 @@ jobs:
 | ----- | ----------- | -------- | ------- |
 | `jamf_url` | Jamf Pro base URL (e.g. `https://example.jamfcloud.com`). | **yes** | — |
 | `rotation_scope` | `all` = every computer with a **managementId** in inventory, or the **exact** smart computer group **name** for a scoped run. | no | `all` |
+| `clear_passwords` | If `true`, skips the wordlist and sends `SET_RECOVERY_LOCK` with an empty `newPassword` (clears Recovery Lock). Respects `dry_run`. | no | `false` |
 | `dry_run` | If `true`, logs intended work but does **not** call the MDM commands API. | no | `false` |
-| `show_passwords_in_dry_run` | With `dry_run: true`, logs generated passphrases at WARN (sensitive). Ignored when `dry_run` is not `true`. | no | `false` |
+| `show_passwords_in_dry_run` | With `dry_run: true`, logs at WARN: generated passphrases when rotating, or explicit clear intent with IDs when `clear_passwords` is `true`. Ignored when `dry_run` is not `true`. | no | `false` |
 | `log_level` | One of: `debug`, `info`, `warn`, `error`. | no | `info` |
 | `wordlist` | Bundled list **relative to the action root**, e.g. `wordlists/eff_short_wordlist_1.txt`. Ignored if `wordlist_path` is set. | no | *(empty)* |
 | `wordlist_path` | **Absolute** path on the runner (use after `actions/checkout`, e.g. `${{ github.workspace }}/path/to/list.txt`). Overrides `wordlist`. | no | *(empty)* |
@@ -91,20 +92,20 @@ jobs:
 - **`github.action_path`** exists only **inside** the composite Action. Callers cannot build paths to bundled files from `with:` alone. Use **`wordlist`** for any file shipped with this Action (e.g. `wordlists/eff_large_wordlist.txt`).
 - Use **`wordlist_path`** with **`${{ github.workspace }}/…`** after **`actions/checkout`** for a list stored in **your** repo.
 
-If both `wordlist` and `wordlist_path` are empty, the script default applies (**bundled** `wordlists/eff_large_wordlist.txt` next to the script).
+If both `wordlist` and `wordlist_path` are empty, the script default applies (**bundled** `wordlists/eff_large_wordlist.txt` next to the script), unless **`clear_passwords: true`** (wordlist is not used).
 
 ## Outputs
 
 | Output | Description |
 | ------ | ----------- |
-| `rotated_count` | Devices for which rotation succeeded (or would succeed in dry run). |
+| `rotated_count` | Devices for which `SET_RECOVERY_LOCK` succeeded: new passphrase, clear (`clear_passwords`), or simulated in dry run. |
 | `failed_count` | Devices skipped or failed (partial failures still produce a non-zero count). |
 
 The underlying script exits with **`1`** (configuration), **`2`** (hard API/auth failure), or **`3`** (partial failure: some devices failed, some succeeded).
 
 ## Examples
 
-These mirror the repository workflows [`examples/workflows/rotate-recovery-lock-scheduled.yml`](examples/workflows/rotate-recovery-lock-scheduled.yml), [`examples/workflows/rotate-recovery-lock-manual.yml`](examples/workflows/rotate-recovery-lock-manual.yml) and [`examples/workflows/rotate-recovery-lock-dry-run.yml`](examples/workflows/rotate-recovery-lock-dry-run.yml).
+These mirror the repository workflows [`examples/workflows/rotate-recovery-lock-scheduled.yml`](examples/workflows/rotate-recovery-lock-scheduled.yml), [`examples/workflows/rotate-recovery-lock-manual.yml`](examples/workflows/rotate-recovery-lock-manual.yml), [`examples/workflows/clear-recovery-lock-manual.yml`](examples/workflows/clear-recovery-lock-manual.yml) and [`examples/workflows/rotate-recovery-lock-dry-run.yml`](examples/workflows/rotate-recovery-lock-dry-run.yml).
 
 ### Scheduled rotation + manual run (`Rotate Recovery Lock`)
 
@@ -154,6 +155,43 @@ on:
 ```
 
 Combine with the same `jobs:` block as in the example above (`rotate-recovery-lock` job and steps).
+
+### Manual clear of Recovery Lock (`Clear Recovery Lock (Manual)`)
+
+Use **`clear_passwords: 'true'`** to remove Recovery Lock via an empty `newPassword` (no wordlist). Prefer a **narrow `rotation_scope`** (smart group) and a **`dry_run`** first; the full file lives at [`examples/workflows/clear-recovery-lock-manual.yml`](examples/workflows/clear-recovery-lock-manual.yml).
+
+```yaml
+name: Clear Recovery Lock (Manual)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rotate-recovery-lock:
+    name: Clear Recovery Lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      JAMF_CLIENT_ID: ${{ secrets.JAMF_CLIENT_ID }}
+      JAMF_CLIENT_SECRET: ${{ secrets.JAMF_CLIENT_SECRET }}
+
+    steps:
+      - name: Run Jamf Recovery Lock Rotation
+        id: jamf_recovery_lock_rotation
+        uses: Inetum-Poland/jamf-recovery-lock-rotation@v1
+        with:
+          jamf_url: ${{ vars.JAMF_URL }}
+          rotation_scope: ${{ vars.ROTATION_SCOPE }}
+          clear_passwords: 'true'
+          dry_run: ${{ vars.DRY_RUN }}
+
+      - name: Report counts
+        shell: bash
+        run: |
+          echo "rotated_count=${{ steps.jamf_recovery_lock_rotation.outputs.rotated_count }}"
+          echo "failed_count=${{ steps.jamf_recovery_lock_rotation.outputs.failed_count }}"
+```
 
 ### Dry run (`Rotate Recovery Lock (Dry Run)`)
 
