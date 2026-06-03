@@ -8,6 +8,23 @@ name: Rotate Recovery Lock (Manual)
 
 on:
   workflow_dispatch:
+    inputs:
+      rotation-scope:
+        description: "🖥️ Rotation scope (Smart Group):"
+        type: string
+        default: "ELIGIBLE Recovery Lock Rotation"
+      clear:
+        description: "🧹 Clear passwords"
+        type: boolean
+        default: false
+      dry-run:
+        description: "🧪 Dry run"
+        type: boolean
+        default: true
+      show-passwords:
+        description: "🔐 Show passwords (dry run only)"
+        type: boolean
+        default: false
 
 jobs:
   rotate-recovery-lock:
@@ -27,15 +44,17 @@ jobs:
           jamf_url: ${{ vars.JAMF_URL }}
 
           # Optional: limit to a smart computer group name instead of all devices
-          rotation_scope: ${{ vars.ROTATION_SCOPE }}
+          rotation_scope: ${{ inputs.rotation-scope }}
+
+          clear_passwords: ${{ inputs.clear }}
 
           # -----------------------------------------------------------------
           # DRY RUN — uncomment to validate configuration without sending MDM commands
           # -----------------------------------------------------------------
-          # dry_run: 'true'
+          dry_run: ${{ inputs.dry-run }}
           #
           # Optional with dry_run: log generated passphrases (sensitive; use only for debugging)
-          # show_passwords_in_dry_run: 'true'
+          show_passwords_in_dry_run: ${{ inputs.show-passwords }}
 
       - name: Report counts
         shell: bash
