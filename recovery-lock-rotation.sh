@@ -48,6 +48,8 @@ INVENTORY_ID_BATCH_SIZE="${INVENTORY_ID_BATCH_SIZE:-80}"
 
 SOURCE_LIST=""
 JAMF_ACCESS_TOKEN=""
+JAMF_TOKEN_EXPIRES_AT=""
+TOKEN_EXPIRY_SAFETY_MARGIN=10
 
 # LOGGING (UTC, no secrets): ———————————————————————————————————————————————————————————————————————
 
@@ -190,14 +192,23 @@ function jamfHttpRetry() {
 	shift 2
 	local ATTEMPT=1 MAX=5 WAIT=2
 	local RAW CODE BODY LAST_ERR=""
+	local NEEDS_AUTH=0 AUTH_RETRIED=0 CURL_ARGS
+
+	[[ "${PATH_SUFFIX}" != "/api/oauth/token" ]] && NEEDS_AUTH=1
 
 	while ((ATTEMPT <= MAX)); do
+		CURL_ARGS=("$@")
+		if ((NEEDS_AUTH)); then
+			authEnsureValidToken
+			CURL_ARGS=(-H "Authorization: Bearer ${JAMF_ACCESS_TOKEN}" "${CURL_ARGS[@]}")
+		fi
+
 		RAW="$(curl -sS \
 			--connect-timeout 30 \
 			--max-time 120 \
 			-X "${METHOD}" \
 			-w '\n%{http_code}' \
-			"$@" \
+			"${CURL_ARGS[@]}" \
 			"$(jamfBaseUrl)${PATH_SUFFIX}" 2>&1)" || {
 			LAST_ERR="curl transport error (attempt ${ATTEMPT}/${MAX})"
 			log_warn "${LAST_ERR}"
@@ -216,6 +227,13 @@ function jamfHttpRetry() {
 		fi
 
 		LAST_ERR="HTTP ${CODE} from ${PATH_SUFFIX}"
+		if [[ "${CODE}" == 401 && "${NEEDS_AUTH}" -eq 1 && "${AUTH_RETRIED}" -eq 0 ]]; then
+			log_warn "${LAST_ERR} — refreshing token and retrying once"
+			authInvalidateToken
+			authObtainToken
+			AUTH_RETRIED=1
+			continue
+		fi
 		if [[ "${CODE}" == 429 || "${CODE}" == 502 || "${CODE}" == 503 || "${CODE}" == 504 ]]; then
 			log_warn "${LAST_ERR} — retrying in ${WAIT}s (attempt ${ATTEMPT}/${MAX})"
 			sleep "${WAIT}"
@@ -235,7 +253,7 @@ function jamfHttpRetry() {
 # AUTH: ————————————————————————————————————————————————————————————————————————————————————————————
 
 function authObtainToken() {
-	local BODY TOKEN
+	local BODY TOKEN EXPIRES_IN NOW
 	log_info "Requesting OAuth access token"
 	BODY="$(jamfHttpRetry POST "/api/oauth/token" \
 		-H "Content-Type: application/x-www-form-urlencoded" \
@@ -250,9 +268,34 @@ function authObtainToken() {
 		log_error "OAuth response missing access_token"
 		exit 2
 	}
-
 	JAMF_ACCESS_TOKEN="${TOKEN}"
-	log_info "OAuth token acquired"
+
+	NOW="$(date +%s)"
+	EXPIRES_IN="$(printf '%s' "${BODY}" | jq -er '.expires_in // empty')" || EXPIRES_IN=""
+	if ! [[ "${EXPIRES_IN}" =~ ^[0-9]+$ ]] || [[ "${EXPIRES_IN}" -lt 1 ]]; then
+		log_warn "OAuth response missing or invalid expires_in — assuming 30s token lifetime"
+		EXPIRES_IN=30
+	fi
+	JAMF_TOKEN_EXPIRES_AT=$((NOW + EXPIRES_IN - TOKEN_EXPIRY_SAFETY_MARGIN))
+	if [[ "${JAMF_TOKEN_EXPIRES_AT}" -le "${NOW}" ]]; then
+		JAMF_TOKEN_EXPIRES_AT=$((NOW + 1))
+	fi
+	log_info "OAuth token acquired (expires_in=${EXPIRES_IN}s, proactive refresh ${TOKEN_EXPIRY_SAFETY_MARGIN}s before expiry)"
+	log_debug "Token proactive refresh at epoch ${JAMF_TOKEN_EXPIRES_AT}"
+}
+
+function authEnsureValidToken() {
+	local NOW
+	if [[ -z "${JAMF_ACCESS_TOKEN}" ]]; then
+		return 0
+	fi
+	NOW="$(date +%s)"
+	if [[ -n "${JAMF_TOKEN_EXPIRES_AT}" && "${NOW}" -lt "${JAMF_TOKEN_EXPIRES_AT}" ]]; then
+		return 0
+	fi
+	log_info "OAuth token near expiry — refreshing"
+	authInvalidateToken
+	authObtainToken
 }
 
 # shellcheck disable=SC2329 # invoked indirectly in main via trap on EXIT
@@ -276,6 +319,7 @@ function authInvalidateToken() {
 		log_debug "Token invalidate skipped or unsupported (non-fatal)"
 	fi
 	JAMF_ACCESS_TOKEN=""
+	JAMF_TOKEN_EXPIRES_AT=""
 }
 
 # DEVICE DISCOVERY: ————————————————————————————————————————————————————————————————————————————————
@@ -287,7 +331,6 @@ function fetchAllComputersInventory() {
 	local PAGE=0 PAGE_SIZE=200 COMBINED='[]' CHUNK GOT
 	while true; do
 		CHUNK="$(jamfHttpRetry GET "/api/v3/computers-inventory?section=GENERAL&page=${PAGE}&page-size=${PAGE_SIZE}" \
-			-H "Authorization: Bearer ${JAMF_ACCESS_TOKEN}" \
 			-H "Accept: application/json")" || {
 			log_error "Failed to fetch computer inventory v3 (page ${PAGE})"
 			exit 2
@@ -338,7 +381,6 @@ function fetchInventoryForComputerIds() {
 		FILTER="$(printf '%s' "${BATCH_IDS}" | jq -r '"id=in=(" + (map(tostring) | join(",")) + ")"')"
 		Q="$(jq -nr --arg f "${FILTER}" '$f|@uri')"
 		RESP="$(jamfHttpRetry GET "/api/v3/computers-inventory?section=GENERAL&page=0&page-size=${PSIZE}&filter=${Q}" \
-			-H "Authorization: Bearer ${JAMF_ACCESS_TOKEN}" \
 			-H "Accept: application/json")" || {
 			log_error "Failed v3 inventory lookup for computer id batch (offset ${OFFSET})"
 			exit 2
@@ -365,7 +407,6 @@ function fetchSmartGroupDevices() {
 	')"
 	Q="$(jq -nr --arg f "${FILTER}" '$f|@uri')"
 	RESPONSE="$(jamfHttpRetry GET "/api/v2/computer-groups/smart-groups?page=0&page-size=100&filter=${Q}" \
-		-H "Authorization: Bearer ${JAMF_ACCESS_TOKEN}" \
 		-H "Accept: application/json")" || {
 		log_error "Failed to search smart computer groups (GET /api/v2/computer-groups/smart-groups)"
 		exit 2
@@ -389,7 +430,6 @@ function fetchSmartGroupDevices() {
 	log_info "Resolved smart group ID=${GROUP_ID} for name \"${NAME}\""
 
 	MEMBERS_RESP="$(jamfHttpRetry GET "/api/v2/computer-groups/smart-group-membership/${GROUP_ID}" \
-		-H "Authorization: Bearer ${JAMF_ACCESS_TOKEN}" \
 		-H "Accept: application/json")" || {
 		log_error "Failed to fetch smart group membership (GET /api/v2/computer-groups/smart-group-membership/${GROUP_ID})"
 		exit 2
@@ -459,7 +499,6 @@ function rotateRecoveryLock() {
 		}')"
 
 	if jamfHttpRetry POST "/api/v2/mdm/commands" \
-		-H "Authorization: Bearer ${JAMF_ACCESS_TOKEN}" \
 		-H "Accept: application/json" \
 		-H "Content-Type: application/json" \
 		-d "${PAYLOAD}" >/dev/null; then
