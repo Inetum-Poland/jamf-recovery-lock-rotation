@@ -245,7 +245,7 @@ Use `rotation_scope` with the exact smart group name (or drive it from `vars.ROT
 
 ```yaml
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Run Jamf Recovery Lock Rotation
         id: jamf_recovery_lock_rotation
